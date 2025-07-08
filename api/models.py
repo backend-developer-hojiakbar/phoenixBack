@@ -1,5 +1,3 @@
-# api/models.py
-
 from django.db import models
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.utils.translation import gettext_lazy as _
@@ -35,6 +33,7 @@ class User(AbstractUser):
     class Role(models.TextChoices):
         CLIENT = 'client', _('Client')
         JOURNAL_MANAGER = 'journal_manager', _('Journal Manager')
+        ACCOUNTANT = 'accountant', _('Accountant')
         ADMIN = 'admin', _('Admin')
 
     class Language(models.TextChoices):
@@ -58,8 +57,21 @@ class User(AbstractUser):
     def __str__(self):
         return self.phone
 
+    def get_full_name(self):
+        return f"{self.name} {self.surname}".strip()
+
+class JournalCategory(models.Model):
+    name = models.CharField(max_length=50, unique=True)
+
+    def __str__(self):
+        return self.name
 
 class Journal(models.Model):
+    class JournalType(models.TextChoices):
+        INTERNATIONAL = 'international', _('International')
+        LOCAL = 'local', _('Local')
+
+    journal_type = models.CharField(max_length=20, choices=JournalType.choices, default=JournalType.LOCAL)
     name = models.CharField(max_length=255)
     name_uz = models.CharField(max_length=255, blank=True, null=True)
     name_ru = models.CharField(max_length=255, blank=True, null=True)
@@ -72,6 +84,7 @@ class Journal(models.Model):
     issn = models.CharField(max_length=20, blank=True, null=True)
     publisher = models.CharField(max_length=100, blank=True, null=True)
     submissionChecklistText = models.TextField(blank=True, null=True)
+    category = models.ForeignKey(JournalCategory, on_delete=models.SET_NULL, null=True, blank=True)
 
     def __str__(self):
         return self.name
@@ -106,11 +119,6 @@ class Article(models.Model):
         REJECTED = 'rejected', _('Rejected')
         PUBLISHED = 'published', _('Published')
 
-    class SubmissionTarget(models.TextChoices):
-        JOURNAL = 'journal', _('Journal')
-        CONFERENCE = 'conference', _('Conference')
-        SPECIAL_ISSUE = 'special_issue', _('Special Issue')
-
     class PaymentStatus(models.TextChoices):
         PAYMENT_PENDING_USER_ACTION = 'payment_pending_user_action', _('Payment Pending User Action')
         PAYMENT_PENDING_ADMIN_APPROVAL = 'payment_pending_admin_approval', _('Payment Pending Admin Approval')
@@ -118,19 +126,15 @@ class Article(models.Model):
         RESULTS_READY = 'results_ready', _('Results Ready')
 
     title = models.CharField(max_length=255)
-    abstract = models.TextField()
-    keywords = models.CharField(max_length=500)
     author = models.ForeignKey(User, on_delete=models.CASCADE, related_name='articles')
+    category = models.CharField(max_length=20)
     journal = models.ForeignKey(Journal, on_delete=models.SET_NULL, null=True, blank=True, related_name='articles')
     submittedDate = models.DateTimeField(auto_now_add=True)
     status = models.CharField(max_length=20, choices=ArticleStatus.choices, default=ArticleStatus.PENDING)
-    tags = models.ManyToManyField(ArticleTag, blank=True)
-    doi = models.CharField(max_length=100, blank=True, null=True)
     viewCount = models.PositiveIntegerField(default=0)
     downloadCount = models.PositiveIntegerField(default=0)
     citationCount = models.PositiveIntegerField(default=0)
     publicationDate = models.DateField(blank=True, null=True)
-    submissionTargetType = models.CharField(max_length=20, choices=SubmissionTarget.choices, default=SubmissionTarget.JOURNAL)
     submissionTargetDetails = models.CharField(max_length=255, blank=True, null=True)
     title_en = models.CharField(max_length=255, blank=True, null=True)
     abstract_en = models.TextField(blank=True, null=True)
@@ -139,6 +143,10 @@ class Article(models.Model):
     issue = models.ForeignKey(Issue, on_delete=models.SET_NULL, blank=True, null=True, related_name='articles')
     submissionPaymentStatus = models.CharField(max_length=50, choices=PaymentStatus.choices, default=PaymentStatus.PAYMENT_PENDING_USER_ACTION)
     submissionReceiptFile = models.FileField(upload_to='receipts/submission/', blank=True, null=True)
+    managerNotes = models.TextField(blank=True, null=True)
+    finalVersionFile = models.FileField(upload_to='article_final_versions/', blank=True, null=True)
+    submission_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    publication_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
 
     def __str__(self):
         return self.title
@@ -167,6 +175,7 @@ class AuditLog(models.Model):
         USER_DELETED = 'USER_DELETED', _('User Deleted')
         ARTICLE_SUBMITTED = 'ARTICLE_SUBMITTED', _('Article Submitted')
         ARTICLE_STATUS_CHANGED = 'ARTICLE_STATUS_CHANGED', _('Article Status Changed')
+        PAYMENT_APPROVED = 'PAYMENT_APPROVED', _('Payment Approved')
 
     user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     actionType = models.CharField(max_length=50, choices=AuditActionType.choices)
