@@ -1,21 +1,31 @@
-from rest_framework import viewsets, generics, permissions, status
+from rest_framework import viewsets, permissions, status, generics, mixins
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.decorators import action
-from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate
 from django.db.models import Count, Sum
-from rest_framework.permissions import IsAuthenticated
+from django.db.models.functions import TruncMonth
 from django.shortcuts import get_object_or_404
-from .models import User, Journal, Article, Issue, AuditLog, IntegrationSetting, JournalCategory,ArticleVersion
-from .serializers import (
-    UserSerializer, JournalSerializer, ArticleSerializer,
-    IssueSerializer, AuditLogSerializer, IntegrationSettingSerializer, JournalCategorySerializer
-)
-from .permissions import IsAdminUser, IsJournalManager, IsClientUser, IsOwnerOrAdmin, IsAssignedEditorOrAdmin, \
-    IsAccountantUser
+from django.http import HttpResponse
+from openpyxl import Workbook
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+from reportlab.lib.units import inch
+import random
+import io
 
+from .models import (
+    User, Journal, Article, Issue, AuditLog, IntegrationSetting, JournalCategory,
+    ArticleVersion, JournalType, EditorialBoardApplication
+)
+from .serializers import (
+    UserSerializer, JournalSerializer, ArticleSerializer, IssueSerializer, AuditLogSerializer,
+    IntegrationSettingSerializer, JournalCategorySerializer, JournalTypeSerializer,
+    EditorialBoardApplicationSerializer
+)
+from .permissions import IsAdminUser, IsJournalManager, IsClientUser, IsOwnerOrAdmin, IsAssignedEditorOrAdmin, IsAccountantUser
 
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
@@ -33,60 +43,8 @@ class LoginView(APIView):
         if user is not None:
             refresh = RefreshToken.for_user(user)
             user_data = UserSerializer(user).data
-            return Response({
-                'refresh': str(refresh),
-                'access': str(refresh.access_token),
-                'user': user_data,
-            })
+            return Response({'refresh': str(refresh), 'access': str(refresh.access_token), 'user': user_data})
         return Response({'error': 'Invalid Credentials'}, status=status.HTTP_401_UNAUTHORIZED)
-
-
-class AdminPaymentApprovalView(APIView):
-    # Ruxsatlarni o'zgartiramiz, chunki narx belgilash uchun Admin yoki Buxgalter kerak
-    permission_classes = [IsAdminUser | IsAccountantUser]
-
-    def post(self, request, article_id, *args, **kwargs):
-        article = get_object_or_404(Article, id=article_id)
-
-        # Frontend'dan keladigan 'submission_fee'ni olamiz
-        submission_fee = request.data.get('submission_fee')
-
-        if submission_fee is None:
-            return Response(
-                {'error': 'Submission fee is required.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        try:
-            # Narxni saqlaymiz
-            article.submission_fee = submission_fee
-            # Maqola holatini va to'lov statusini o'zgartiramiz
-            article.submissionPaymentStatus = Article.PaymentStatus.PAYMENT_APPROVED_PROCESSING
-            article.status = Article.ArticleStatus.REVIEWING
-            article.save()
-
-            serializer = ArticleSerializer(article, context={'request': request})
-            return Response(serializer.data, status=status.HTTP_200_OK)
-
-        except Exception as e:
-            return Response(
-                {'error': str(e)},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-
-class JournalTypesView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request, *args, **kwargs):
-        types = [{'value': choice[0], 'label': str(choice[1])} for choice in Journal.JournalType.choices]
-        return Response(types)
-
-
-class JournalCategoryViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = JournalCategory.objects.all().order_by('name')
-    serializer_class = JournalCategorySerializer
-    permission_classes = [IsAuthenticated]
 
 
 class UserViewSet(viewsets.ModelViewSet):
@@ -95,8 +53,10 @@ class UserViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAdminUser]
 
 
-class JournalViewSet(viewsets.ModelViewSet):
-    serializer_class = JournalSerializer
+class JournalTypeViewSet(viewsets.ModelViewSet):
+    queryset = JournalType.objects.all()
+    serializer_class = JournalTypeSerializer
+    permission_classes = [permissions.IsAuthenticated]
 
     def get_permissions(self):
         if self.action in ['list', 'retrieve']:
@@ -105,22 +65,24 @@ class JournalViewSet(viewsets.ModelViewSet):
             self.permission_classes = [IsAdminUser]
         return super().get_permissions()
 
-    def get_queryset(self):
-        user = self.request.user
-        if user.role == User.Role.JOURNAL_MANAGER:
-            queryset = Journal.objects.filter(manager=user)
+
+class JournalCategoryViewSet(viewsets.ModelViewSet):
+    queryset = JournalCategory.objects.all()
+    serializer_class = JournalCategorySerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+
+class JournalViewSet(viewsets.ModelViewSet):
+    queryset = Journal.objects.select_related('journal_type', 'category', 'manager').all()
+    serializer_class = JournalSerializer
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get_permissions(self):
+        if self.action in ['list', 'retrieve']:
+            self.permission_classes = [permissions.IsAuthenticated]
         else:
-            queryset = Journal.objects.all()
-
-        journal_type = self.request.query_params.get('journal_type')
-        category_id = self.request.query_params.get('category')
-
-        if journal_type:
-            queryset = queryset.filter(journal_type=journal_type)
-        if category_id:
-            queryset = queryset.filter(category__id=category_id)
-
-        return queryset
+            self.permission_classes = [IsAdminUser]
+        return super().get_permissions()
 
     def get_serializer_context(self):
         return {'request': self.request}
@@ -134,122 +96,284 @@ class ArticleViewSet(viewsets.ModelViewSet):
         return {'request': self.request}
 
     def get_permissions(self):
-        # Bu action'larni to'g'ri ro'yxatga kiritamiz
-        if self.action in ['request_revision', 'reject_article', 'accept_article']:
-            self.permission_classes = [IsJournalManager | IsAssignedEditorOrAdmin]
-        # submit_revision endi alohida permission_classes bilan ishlaydi
+        if self.action in ['request_revision', 'reject_article', 'accept_article', 'add_link_or_attachment']:
+            self.permission_classes = [IsAdminUser | IsJournalManager]
         elif self.action == 'submit_revision':
             self.permission_classes = [IsClientUser, IsOwnerOrAdmin]
         elif self.action == 'create':
             self.permission_classes = [IsClientUser]
-        elif self.action in ['update', 'partial_update', 'destroy']:
-            self.permission_classes = [IsAdminUser]
         else:
             self.permission_classes = [permissions.IsAuthenticated]
         return super().get_permissions()
 
     def get_queryset(self):
         user = self.request.user
-        base_queryset = Article.objects.select_related(
-            'author', 'journal', 'assignedEditor', 'issue'
-        ).prefetch_related('versions')
-
+        base_queryset = Article.objects.select_related('author', 'journal', 'assignedEditor').prefetch_related(
+            'versions')
         if user.role == User.Role.CLIENT:
             return base_queryset.filter(author=user).order_by('-submittedDate')
         elif user.role == User.Role.JOURNAL_MANAGER:
-            return base_queryset.filter(
-                assignedEditor=user,
-                submissionPaymentStatus=Article.PaymentStatus.PAYMENT_APPROVED_PROCESSING
-            ).order_by('-submittedDate')
+            return base_queryset.filter(journal__manager=user,
+                                        submissionPaymentStatus=Article.PaymentStatus.PAYMENT_APPROVED_PROCESSING).order_by(
+                '-submittedDate')
         elif user.role in [User.Role.ADMIN, User.Role.ACCOUNTANT]:
             return base_queryset.all().order_by('-submittedDate')
         return Article.objects.none()
 
-    # ... perform_create va boshqa action'lar o'zgarishsiz ...
     def perform_create(self, serializer):
+        plagiarism_percentage = random.uniform(5.0, 25.0)
         journal = serializer.validated_data.get('journal')
-        assigned_editor = None
-        if journal and journal.manager:
-            assigned_editor = journal.manager
+        assigned_editor = journal.manager if journal else None
         serializer.save(
             author=self.request.user,
             assignedEditor=assigned_editor,
+            plagiarism_percentage=plagiarism_percentage,
             submissionPaymentStatus=Article.PaymentStatus.PAYMENT_PENDING_ADMIN_APPROVAL
         )
 
-    # ... request_revision, reject, accept action'lari avvalgidek qoladi ...
-    @action(detail=True, methods=['post'], url_path='request-revision')
+    @action(detail=True, methods=['post'], url_path='request_revision')
     def request_revision(self, request, pk=None):
         article = self.get_object()
         notes = request.data.get('notes', '')
-        if not notes:
-            return Response({'error': 'Notes for revision are required.'}, status=status.HTTP_400_BAD_REQUEST)
         article.status = Article.ArticleStatus.NEEDS_REVISION
         article.managerNotes = notes
         article.save()
-        serializer = self.get_serializer(article)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(self.get_serializer(article).data)
 
-    @action(detail=True, methods=['post'], url_path='reject')
+    @action(detail=True, methods=['post'], url_path='reject_article')
     def reject_article(self, request, pk=None):
         article = self.get_object()
         notes = request.data.get('notes', '')
         article.status = Article.ArticleStatus.REJECTED
         article.managerNotes = notes
         article.save()
-        serializer = self.get_serializer(article)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(self.get_serializer(article).data)
 
-    @action(detail=True, methods=['post'], url_path='accept', parser_classes=[MultiPartParser, FormParser])
+    @action(detail=True, methods=['post'], url_path='accept_article', parser_classes=[MultiPartParser, FormParser])
     def accept_article(self, request, pk=None):
         article = self.get_object()
-        final_file = request.data.get('finalVersionFile')
-        if not final_file:
-            return Response({'error': 'Final version file is required for acceptance.'},
-                            status=status.HTTP_400_BAD_REQUEST)
         article.status = Article.ArticleStatus.ACCEPTED
-        article.finalVersionFile = final_file
-        article.managerNotes = "Maqola qabul qilindi. Yakuniy versiya yuklandi."
-        article.save()
-        serializer = self.get_serializer(article)
-        return Response(serializer.data, status=status.HTTP_200_OK)
 
-    # BU ACTION'NI YANGILAYMIZ
+        final_file = request.data.get('finalVersionFile')
+        if final_file:
+            article.finalVersionFile = final_file
+
+        if article.finalVersionFile:
+            # Bu yerda sertifikat generatsiya qilish logikasi bo'lishi kerak.
+            # Hozircha test uchun yakuniy faylni sertifikat sifatida ishlatamiz.
+            article.certificate_file = article.finalVersionFile
+
+        article.save()
+        return Response(self.get_serializer(article).data)
+
     @action(detail=True, methods=['post'], url_path='submit-revision', parser_classes=[MultiPartParser, FormParser])
     def submit_revision(self, request, pk=None):
         article = self.get_object()
-
-        # Bu tekshiruv IsOwnerOrAdmin permission'ida qilinadi, lekin qo'shimcha tekshirish zarar qilmaydi.
         if article.author != request.user:
-            return Response({'error': 'You do not have permission to perform this action.'},
-                            status=status.HTTP_403_FORBIDDEN)
-
-        if article.status not in [Article.ArticleStatus.NEEDS_REVISION, Article.ArticleStatus.REJECTED]:
-            return Response(
-                {'error': 'You can only submit revisions for articles that need revision or were rejected.'},
-                status=status.HTTP_400_BAD_REQUEST)
-
+            return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
         new_file = request.data.get('file')
-        notes = request.data.get('notes', '')
-
         if not new_file:
-            return Response({'error': 'A new file for the revision is required.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        last_version_number = article.versions.count()
-        ArticleVersion.objects.create(
-            article=article,
-            versionNumber=last_version_number + 1,
-            file=new_file,
-            notes=notes,
-            submitter=request.user
-        )
-
+            return Response({'error': 'A new file is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        ArticleVersion.objects.create(article=article, versionNumber=article.versions.count() + 1, file=new_file,
+                                      submitter=request.user)
         article.status = Article.ArticleStatus.REVIEWING
-        article.managerNotes = "Muallif tomonidan yangi versiya yuborildi."
+        article.plagiarism_percentage = random.uniform(2.0, 15.0)
         article.save()
+        return Response(self.get_serializer(article).data)
 
-        serializer = self.get_serializer(article)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+    @action(detail=True, methods=['patch'], url_path='add-link-or-attachment',
+            parser_classes=[MultiPartParser, FormParser])
+    def add_link_or_attachment(self, request, pk=None):
+        article = self.get_object()
+        serializer = self.get_serializer(article, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+
+class EditorialBoardApplicationViewSet(
+    mixins.CreateModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.DestroyModelMixin,
+    mixins.ListModelMixin,
+    viewsets.GenericViewSet
+):
+    queryset = EditorialBoardApplication.objects.select_related('user').all().order_by('-submitted_at')
+    serializer_class = EditorialBoardApplicationSerializer
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get_permissions(self):
+        if self.action == 'create':
+            self.permission_classes = [IsClientUser]
+        else:
+            self.permission_classes = [IsAdminUser]
+        return super().get_permissions()
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
+    @action(
+        detail=True,
+        methods=['patch'],
+        url_path='update-status',
+        parser_classes=[JSONParser]  # To'g'ri joydan import qilingan
+    )
+    def update_status(self, request, pk=None):
+        application = self.get_object()
+        new_status = request.data.get('status')
+
+        if new_status not in [choice[0] for choice in EditorialBoardApplication.ApplicationStatus.choices]:
+            return Response({'error': 'Invalid status value.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        application.status = new_status
+        application.save(update_fields=['status'])
+
+        if new_status == EditorialBoardApplication.ApplicationStatus.APPROVED:
+            user = application.user
+            user.role = User.Role.JOURNAL_MANAGER
+            user.save(update_fields=['role'])
+
+        return Response(self.get_serializer(application).data)
+
+
+class FinancialReportAPIView(APIView):
+    permission_classes = [IsAdminUser | IsAccountantUser]
+
+    def get(self, request, *args, **kwargs):
+        export_format = request.query_params.get('format')
+
+        pending_payment_articles_qs = Article.objects.filter(
+            submissionPaymentStatus=Article.PaymentStatus.PAYMENT_PENDING_ADMIN_APPROVAL
+        ).select_related('author').order_by('submittedDate')
+
+        monthly_revenue_qs = Article.objects.filter(
+            submissionPaymentStatus=Article.PaymentStatus.PAYMENT_APPROVED_PROCESSING
+        ).annotate(month=TruncMonth('submittedDate')).values('month').annotate(total=Sum('submission_fee')).order_by(
+            'month')
+
+        approved_articles_qs = Article.objects.filter(
+            status=Article.ArticleStatus.ACCEPTED
+        ).select_related('author', 'journal').order_by('-publicationDate')
+
+        if export_format == 'excel':
+            return self.export_to_excel(monthly_revenue_qs, approved_articles_qs)
+        if export_format == 'pdf':
+            return self.export_to_pdf(monthly_revenue_qs, approved_articles_qs)
+
+        request_context = {'request': request}
+        data = {
+            'monthly_revenue': list(monthly_revenue_qs),
+            'approved_articles_history': ArticleSerializer(approved_articles_qs, many=True,
+                                                           context=request_context).data,
+            'pending_payments_list': ArticleSerializer(pending_payment_articles_qs, many=True,
+                                                       context=request_context).data,
+        }
+        return Response(data)
+
+    def export_to_excel(self, monthly_revenue, approved_articles):
+        response = HttpResponse(content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        response['Content-Disposition'] = 'attachment; filename="financial_report.xlsx"'
+        wb = Workbook()
+        ws1 = wb.active
+        ws1.title = "Oylik Daromad"
+        ws1.append(['Oy', 'Jami Daromad (UZS)'])
+        for item in monthly_revenue:
+            ws1.append([item['month'].strftime('%Y-%m'), item['total']])
+        ws2 = wb.create_sheet(title="Tasdiqlangan Maqolalar")
+        ws2.append(['ID', 'Sarlavha', 'Muallif', 'Jurnal', 'Tasdiqlangan Sana'])
+        for article in approved_articles:
+            ws2.append([
+                article.id,
+                article.title,
+                article.author.get_full_name(),
+                article.journal.name if article.journal else 'N/A',
+                article.publicationDate.strftime('%Y-%m-%d') if article.publicationDate else 'N/A'
+            ])
+        wb.save(response)
+        return response
+
+    def export_to_pdf(self, monthly_revenue, approved_articles):
+        buffer = io.BytesIO()
+        p = canvas.Canvas(buffer, pagesize=letter)
+        width, height = letter
+        y_position = height - inch
+        p.drawString(inch, y_position, "Moliyaviy Hisobot")
+        y_position -= 0.5 * inch
+        p.drawString(inch, y_position, "Oylik Daromad")
+        y_position -= 0.25 * inch
+        for item in monthly_revenue:
+            p.drawString(inch, y_position, f"{item['month'].strftime('%Y-%m')}: {item['total']} UZS")
+            y_position -= 0.25 * inch
+            if y_position < inch:
+                p.showPage()
+                y_position = height - inch
+        y_position -= 0.5 * inch
+        p.drawString(inch, y_position, "Tasdiqlangan Maqolalar Tarixi")
+        y_position -= 0.25 * inch
+        for article in approved_articles:
+            line = f"ID {article.id}: {article.title[:40]}... ({article.author.get_full_name()})"
+            p.drawString(inch, y_position, line)
+            y_position -= 0.25 * inch
+            if y_position < inch:
+                p.showPage()
+                y_position = height - inch
+        p.save()
+        buffer.seek(0)
+        return HttpResponse(buffer, content_type='application/pdf')
+
+
+class ApprovePaymentAPIView(APIView):
+    permission_classes = [IsAdminUser | IsAccountantUser]
+
+    def post(self, request, article_id, *args, **kwargs):
+        article = get_object_or_404(Article.objects.select_related('author', 'journal'), id=article_id)
+        author = article.author
+        journal = article.journal
+
+        if not journal:
+            return Response({'error': 'Article is not associated with a journal.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Hamkorlikni tekshirish
+        is_partner = 'hamkor' in author.name.lower() or 'xamkor' in author.name.lower() or \
+                     'hamkor' in author.surname.lower() or 'xamkor' in author.surname.lower()
+
+        # Narxni avtomatik belgilash
+        submission_fee = journal.partner_price if is_partner else journal.regular_price
+
+        article.submission_fee = submission_fee
+        article.submissionPaymentStatus = Article.PaymentStatus.PAYMENT_APPROVED_PROCESSING
+        article.status = Article.ArticleStatus.REVIEWING
+        article.save()
+        return Response(ArticleSerializer(article, context={'request': request}).data)
+
+
+class ProfileView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        serializer = UserSerializer(request.user)
+        return Response(serializer.data)
+
+
+class SystemSettingsView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def get(self, request, *args, **kwargs):
+        settings = IntegrationSetting.objects.all()
+        serializer = IntegrationSettingSerializer(settings, many=True)
+        return Response(serializer.data)
+
+    def patch(self, request, service_name, *args, **kwargs):
+        setting = get_object_or_404(IntegrationSetting, serviceName=service_name)
+        serializer = IntegrationSettingSerializer(setting, data=request.data, partial=True)
+        if serializer.is_valid():
+            api_key = request.data.get('apiKey')
+            if api_key:
+                setting.apiKey = api_key
+            serializer.save()
+            setting.save(update_fields=['apiKey'] if api_key else None)
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class IssueViewSet(viewsets.ModelViewSet):
@@ -270,20 +394,15 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAdminUser]
 
 
-class ProfileView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        serializer = UserSerializer(request.user)
-        return Response(serializer.data)
-
-
 class DashboardSummaryView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
         user = self.request.user
         data = {}
+        request_context = {'request': request}
+
+        # Bu yerda UserRole o'rniga User.Role ishlatildi
         if user.role == User.Role.CLIENT:
             data = {
                 'pending': Article.objects.filter(author=user, status=Article.ArticleStatus.PENDING).count(),
@@ -292,85 +411,28 @@ class DashboardSummaryView(APIView):
             }
         elif user.role == User.Role.JOURNAL_MANAGER:
             data = {
-                'newSubmissions': Article.objects.filter(assignedEditor=user,
+                'newSubmissions': Article.objects.filter(journal__manager=user,
                                                          status=Article.ArticleStatus.REVIEWING).count(),
-                'reviewing': Article.objects.filter(assignedEditor=user,
+                'reviewing': Article.objects.filter(journal__manager=user,
                                                     status=Article.ArticleStatus.REVIEWING).count(),
             }
-        elif user.role == User.Role.ACCOUNTANT:
+        # Bu yerda UserRole o'rniga User.Role ishlatildi
+        elif user.role in [User.Role.ACCOUNTANT, User.Role.ADMIN]:
+            pending_payment_articles = Article.objects.filter(
+                submissionPaymentStatus=Article.PaymentStatus.PAYMENT_PENDING_ADMIN_APPROVAL
+            ).select_related('author').order_by('submittedDate')
+
             data = {
-                'total_articles': Article.objects.count(),
-                'payments_pending_approval': Article.objects.filter(
-                    submissionPaymentStatus=Article.PaymentStatus.PAYMENT_PENDING_ADMIN_APPROVAL).count(),
+                'totalUsers': User.objects.count() if user.role == User.Role.ADMIN else None,
+                'totalJournals': Journal.objects.count() if user.role == User.Role.ADMIN else None,
+                'totalArticles': Article.objects.count(),
+                'pendingAll': Article.objects.filter(
+                    status=Article.ArticleStatus.PENDING).count() if user.role == User.Role.ADMIN else None,
+                'payments_pending_approval': pending_payment_articles.count(),
+                'pending_payments_list': ArticleSerializer(pending_payment_articles, many=True,
+                                                           context=request_context).data,
                 'total_submission_fees': Article.objects.aggregate(Sum('submission_fee'))['submission_fee__sum'] or 0,
                 'total_publication_fees': Article.objects.aggregate(Sum('publication_fee'))[
                                               'publication_fee__sum'] or 0,
             }
-        elif user.role == User.Role.ADMIN:
-            data = {
-                'totalUsers': User.objects.count(),
-                'totalJournals': Journal.objects.count(),
-                'totalArticles': Article.objects.count(),
-                'pendingAll': Article.objects.filter(status=Article.ArticleStatus.PENDING).count(),
-            }
         return Response(data)
-
-
-class FinancialReportsView(APIView):
-    permission_classes = [IsAdminUser | IsAccountantUser]
-
-    def get(self, request, *args, **kwargs):
-        total_revenue = (Article.objects.aggregate(Sum('submission_fee'))['submission_fee__sum'] or 0) + \
-                        (Article.objects.aggregate(Sum('publication_fee'))['publication_fee__sum'] or 0)
-
-        articles_by_status = Article.objects.values('status').annotate(count=Count('id'))
-        payments_by_status = Article.objects.values('submissionPaymentStatus').annotate(count=Count('id'))
-
-        report_data = {
-            'total_revenue': total_revenue,
-            'articles_by_status': list(articles_by_status),
-            'payments_by_status': list(payments_by_status),
-            'payments_pending_approval_list': ArticleSerializer(
-                Article.objects.filter(submissionPaymentStatus=Article.PaymentStatus.PAYMENT_PENDING_ADMIN_APPROVAL),
-                many=True,
-                context={'request': request}  # <--- MANA SHU CONTEXT'NI QO'SHING
-            ).data
-        }
-        return Response(report_data)
-
-
-class SystemSettingsView(APIView):
-    permission_classes = [IsAdminUser]
-
-    def get(self, request, *args, **kwargs):
-        for service_name, _ in IntegrationSetting.ServiceName.choices:
-            IntegrationSetting.objects.get_or_create(serviceName=service_name)
-        settings = IntegrationSetting.objects.all()
-        serializer = IntegrationSettingSerializer(settings, many=True)
-        return Response(serializer.data)
-
-
-class SystemSettingsDetailView(APIView):
-    permission_classes = [IsAdminUser]
-
-    def get_object(self, service_name):
-        try:
-            return IntegrationSetting.objects.get(serviceName=service_name)
-        except IntegrationSetting.DoesNotExist:
-            return None
-
-    def patch(self, request, service_name, *args, **kwargs):
-        setting = self.get_object(service_name)
-        if not setting:
-            return Response({'error': 'Setting not found'}, status=status.HTTP_404_NOT_FOUND)
-        data = request.data.copy()
-        data.pop('apiKeyMasked', None)
-        if 'apiKey' in data:
-            setting.apiKey = data.pop('apiKey')
-        serializer = IntegrationSettingSerializer(setting, data=data, partial=True)
-        if serializer.is_valid():
-            serializer.save()
-            setting.save()
-            response_serializer = IntegrationSettingSerializer(setting)
-            return Response(response_serializer.data, status=status.HTTP_200_OK)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

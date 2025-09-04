@@ -34,5 +34,5 @@ class IsAssignedEditorOrAdmin(permissions.BasePermission):
         if request.user.role == User.Role.ADMIN:
             return True
         if request.user.role == User.Role.JOURNAL_MANAGER and isinstance(obj, Article):
-            return obj.assignedEditor == request.user and obj.submissionPaymentStatus == Article.PaymentStatus.PAYMENT_APPROVED_PROCESSING
+            return obj.assignedEditor == request.user
         return False

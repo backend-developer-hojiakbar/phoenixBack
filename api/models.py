@@ -2,6 +2,7 @@ from django.db import models
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.utils.translation import gettext_lazy as _
 
+
 class UserManager(BaseUserManager):
     def create_user(self, phone, name, surname, password=None, **extra_fields):
         if not phone:
@@ -60,24 +61,25 @@ class User(AbstractUser):
     def get_full_name(self):
         return f"{self.name} {self.surname}".strip()
 
+
+class JournalType(models.Model):
+    name = models.CharField(max_length=100, unique=True)
+
+    def __str__(self):
+        return self.name
+
+
 class JournalCategory(models.Model):
     name = models.CharField(max_length=50, unique=True)
 
     def __str__(self):
         return self.name
 
-class Journal(models.Model):
-    class JournalType(models.TextChoices):
-        INTERNATIONAL = 'international', _('International')
-        LOCAL = 'local', _('Local')
 
-    journal_type = models.CharField(max_length=20, choices=JournalType.choices, default=JournalType.LOCAL)
+class Journal(models.Model):
+    journal_type = models.ForeignKey(JournalType, on_delete=models.PROTECT, related_name='journals', verbose_name="Jurnal Turi")
     name = models.CharField(max_length=255)
-    name_uz = models.CharField(max_length=255, blank=True, null=True)
-    name_ru = models.CharField(max_length=255, blank=True, null=True)
-    name_en = models.CharField(max_length=255, blank=True, null=True)
     description = models.TextField()
-    description_en = models.TextField(blank=True, null=True)
     manager = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='managed_journals')
     rulesFilePath = models.FileField(upload_to='journal_rules/', blank=True, null=True)
     templateFilePath = models.FileField(upload_to='journal_templates/', blank=True, null=True)
@@ -85,6 +87,9 @@ class Journal(models.Model):
     publisher = models.CharField(max_length=100, blank=True, null=True)
     submissionChecklistText = models.TextField(blank=True, null=True)
     category = models.ForeignKey(JournalCategory, on_delete=models.SET_NULL, null=True, blank=True)
+    image = models.ImageField(upload_to='journal_images/', blank=True, null=True, verbose_name="Jurnal Rasmi")
+    partner_price = models.DecimalField(max_digits=10, decimal_places=2, default=50000.00, verbose_name="Hamkorlar uchun narx")
+    regular_price = models.DecimalField(max_digits=10, decimal_places=2, default=100000.00, verbose_name="Barcha uchun narx")
 
     def __str__(self):
         return self.name
@@ -120,14 +125,12 @@ class Article(models.Model):
         PUBLISHED = 'published', _('Published')
 
     class PaymentStatus(models.TextChoices):
-        PAYMENT_PENDING_USER_ACTION = 'payment_pending_user_action', _('Payment Pending User Action')
         PAYMENT_PENDING_ADMIN_APPROVAL = 'payment_pending_admin_approval', _('Payment Pending Admin Approval')
         PAYMENT_APPROVED_PROCESSING = 'payment_approved_processing', _('Payment Approved Processing')
-        RESULTS_READY = 'results_ready', _('Results Ready')
 
     title = models.CharField(max_length=255)
     author = models.ForeignKey(User, on_delete=models.CASCADE, related_name='articles')
-    category = models.CharField(max_length=20)
+    category = models.CharField(max_length=100, blank=True)
     journal = models.ForeignKey(Journal, on_delete=models.SET_NULL, null=True, blank=True, related_name='articles')
     submittedDate = models.DateTimeField(auto_now_add=True)
     status = models.CharField(max_length=20, choices=ArticleStatus.choices, default=ArticleStatus.PENDING)
@@ -141,12 +144,16 @@ class Article(models.Model):
     keywords_en = models.CharField(max_length=500, blank=True, null=True)
     assignedEditor = models.ForeignKey(User, on_delete=models.SET_NULL, blank=True, null=True, related_name='assigned_articles')
     issue = models.ForeignKey(Issue, on_delete=models.SET_NULL, blank=True, null=True, related_name='articles')
-    submissionPaymentStatus = models.CharField(max_length=50, choices=PaymentStatus.choices, default=PaymentStatus.PAYMENT_PENDING_USER_ACTION)
+    submissionPaymentStatus = models.CharField(max_length=50, choices=PaymentStatus.choices, default=PaymentStatus.PAYMENT_PENDING_ADMIN_APPROVAL)
     submissionReceiptFile = models.FileField(upload_to='receipts/submission/', blank=True, null=True)
     managerNotes = models.TextField(blank=True, null=True)
     finalVersionFile = models.FileField(upload_to='article_final_versions/', blank=True, null=True)
     submission_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     publication_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    plagiarism_percentage = models.FloatField(blank=True, null=True)
+    certificate_file = models.FileField(upload_to='certificates/', blank=True, null=True)
+    external_link = models.URLField(max_length=500, blank=True, null=True)
+    attachment_file = models.FileField(upload_to='attachments/', blank=True, null=True)
 
     def __str__(self):
         return self.title
@@ -165,6 +172,23 @@ class ArticleVersion(models.Model):
 
     def __str__(self):
         return f"{self.article.title} - v{self.versionNumber}"
+
+
+class EditorialBoardApplication(models.Model):
+    class ApplicationStatus(models.TextChoices):
+        PENDING = 'pending', _('Pending')
+        APPROVED = 'approved', _('Approved')
+        REJECTED = 'rejected', _('Rejected')
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='applications')
+    passport_file = models.FileField(upload_to='applications/passports/')
+    photo_3x4 = models.FileField(upload_to='applications/photos/')
+    diploma_file = models.FileField(upload_to='applications/diplomas/')
+    submitted_at = models.DateTimeField(auto_now_add=True)
+    status = models.CharField(max_length=20, choices=ApplicationStatus.choices, default=ApplicationStatus.PENDING)
+
+    def __str__(self):
+        return f"Application from {self.user.get_full_name()}"
 
 
 class AuditLog(models.Model):
