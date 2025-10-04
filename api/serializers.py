@@ -1,8 +1,9 @@
 from rest_framework import serializers
 from .models import (
     User, Journal, Article, Issue, ArticleVersion, AuditLog, IntegrationSetting,
-    JournalCategory, JournalType, EditorialBoardApplication
+    JournalCategory, JournalType, EditorialBoardApplication, Service, ServiceOrder
 )
+import json
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -36,15 +37,11 @@ class JournalCategorySerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
-# ... api/serializers.py faylingizning boshqa qismlari
-
 class JournalSerializer(serializers.ModelSerializer):
     manager = UserSerializer(read_only=True)
     category = JournalCategorySerializer(read_only=True)
     journal_type = JournalTypeSerializer(read_only=True)
     image_url = serializers.ImageField(source='image', use_url=True, read_only=True)
-
-    # "required=False" va "allow_null=True" qo'shildi
     manager_id = serializers.PrimaryKeyRelatedField(
         queryset=User.objects.filter(role=User.Role.JOURNAL_MANAGER),
         source='manager', write_only=True, required=False, allow_null=True
@@ -53,7 +50,6 @@ class JournalSerializer(serializers.ModelSerializer):
         queryset=JournalCategory.objects.all(),
         source='category', write_only=True, allow_null=True, required=False
     )
-    # Bu maydon majburiy bo'lib qoladi
     journal_type_id = serializers.PrimaryKeyRelatedField(
         queryset=JournalType.objects.all(),
         source='journal_type', write_only=True
@@ -68,9 +64,6 @@ class JournalSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             'image': {'write_only': True, 'required': False}
         }
-
-
-# ... api/serializers.py faylingizning qolgan qismlari
 
 
 class ArticleVersionSerializer(serializers.ModelSerializer):
@@ -93,16 +86,10 @@ class ArticleSerializer(serializers.ModelSerializer):
     versions = ArticleVersionSerializer(many=True, read_only=True)
     assignedEditorName = serializers.CharField(source='assignedEditor.get_full_name', read_only=True, allow_null=True,
                                                default='')
-    submissionReceiptFileUrl = serializers.SerializerMethodField()
     finalVersionFileUrl = serializers.SerializerMethodField()
     certificate_file_url = serializers.SerializerMethodField()
     attachment_file_url = serializers.SerializerMethodField()
-
-    def get_submissionReceiptFileUrl(self, obj):
-        request = self.context.get('request')
-        if obj.submissionReceiptFile and hasattr(obj.submissionReceiptFile, 'url'):
-            return request.build_absolute_uri(obj.submissionReceiptFile.url)
-        return None
+    payment_url = serializers.CharField(read_only=True, required=False)
 
     def get_finalVersionFileUrl(self, obj):
         request = self.context.get('request')
@@ -127,8 +114,9 @@ class ArticleSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'title', 'author', 'category', 'journal', 'journalName', 'submittedDate', 'status',
             'abstract_en', 'keywords_en', 'assignedEditor', 'assignedEditorName', 'submissionPaymentStatus',
-            'submissionReceiptFileUrl', 'versions', 'managerNotes', 'finalVersionFileUrl', 'submission_fee',
-            'plagiarism_percentage', 'certificate_file_url', 'external_link', 'attachment_file_url'
+            'versions', 'managerNotes', 'finalVersionFileUrl', 'submission_fee',
+            'plagiarism_percentage', 'certificate_file_url', 'external_link', 'attachment_file_url',
+            'payment_url'
         ]
 
 
@@ -191,3 +179,39 @@ class EditorialBoardApplicationSerializer(serializers.ModelSerializer):
         model = EditorialBoardApplication
         fields = '__all__'
         read_only_fields = ['user', 'submitted_at']
+
+
+class ServiceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Service
+        fields = ['id', 'name', 'slug', 'description', 'price', 'is_active']
+
+
+class ServiceOrderSerializer(serializers.ModelSerializer):
+    user = UserSerializer(read_only=True)
+    service = ServiceSerializer(read_only=True)
+    service_id = serializers.PrimaryKeyRelatedField(
+        queryset=Service.objects.all(), source='service', write_only=True
+    )
+    form_data_str = serializers.CharField(write_only=True, required=False, allow_blank=True)
+
+    class Meta:
+        model = ServiceOrder
+        fields = [
+            'id', 'user', 'service', 'status', 'form_data', 'attached_file',
+            'created_at', 'service_id', 'form_data_str'
+        ]
+        extra_kwargs = {
+            'attached_file': {'required': False},
+            'form_data': {'read_only': True}
+        }
+
+    def create(self, validated_data):
+        form_data_str = validated_data.pop('form_data_str', '{}')
+        try:
+            form_data = json.loads(form_data_str)
+        except json.JSONDecodeError:
+            form_data = {}
+
+        validated_data['form_data'] = form_data
+        return super().create(validated_data)

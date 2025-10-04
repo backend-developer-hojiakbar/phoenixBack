@@ -35,7 +35,7 @@ INSTALLED_APPS = [
     # O'zimizning ilova
     'api',
 ]
-
+from decouple import config
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -135,3 +135,15 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173", # React development server
     "http://127.0.0.1:5173",
 ]
+# CLICK Integration Settings
+# CLICK_SERVICE_ID = config('CLICK_SERVICE_ID', cast=int)
+# CLICK_MERCHANT_USER_ID = config('CLICK_MERCHANT_USER_ID', cast=int)
+# CLICK_SECRET_KEY = config('CLICK_SECRET_KEY')
+CLICK_SERVICE_ID = 82154
+CLICK_MERCHANT_USER_ID = 45730
+CLICK_SECRET_KEY = 'XZC6u3JBBh'
+# Ilmiyfaoliyat.uz
+# SERVICE_ID:82154
+# MERCHANT_ID:45730
+# SECRET_KEY:XZC6u3JBBh
+# merchant user id: 63536

@@ -1,6 +1,8 @@
 from django.db import models
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.utils.translation import gettext_lazy as _
+from django.contrib.contenttypes.fields import GenericForeignKey
+from django.contrib.contenttypes.models import ContentType
 
 
 class UserManager(BaseUserManager):
@@ -77,7 +79,8 @@ class JournalCategory(models.Model):
 
 
 class Journal(models.Model):
-    journal_type = models.ForeignKey(JournalType, on_delete=models.PROTECT, related_name='journals', verbose_name="Jurnal Turi")
+    journal_type = models.ForeignKey(JournalType, on_delete=models.PROTECT, related_name='journals',
+                                     verbose_name="Jurnal Turi")
     name = models.CharField(max_length=255)
     description = models.TextField()
     manager = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='managed_journals')
@@ -88,8 +91,10 @@ class Journal(models.Model):
     submissionChecklistText = models.TextField(blank=True, null=True)
     category = models.ForeignKey(JournalCategory, on_delete=models.SET_NULL, null=True, blank=True)
     image = models.ImageField(upload_to='journal_images/', blank=True, null=True, verbose_name="Jurnal Rasmi")
-    partner_price = models.DecimalField(max_digits=10, decimal_places=2, default=50000.00, verbose_name="Hamkorlar uchun narx")
-    regular_price = models.DecimalField(max_digits=10, decimal_places=2, default=100000.00, verbose_name="Barcha uchun narx")
+    partner_price = models.DecimalField(max_digits=10, decimal_places=2, default=50000.00,
+                                        verbose_name="Hamkorlar uchun narx")
+    regular_price = models.DecimalField(max_digits=10, decimal_places=2, default=100000.00,
+                                        verbose_name="Barcha uchun narx")
 
     def __str__(self):
         return self.name
@@ -125,8 +130,9 @@ class Article(models.Model):
         PUBLISHED = 'published', _('Published')
 
     class PaymentStatus(models.TextChoices):
-        PAYMENT_PENDING_ADMIN_APPROVAL = 'payment_pending_admin_approval', _('Payment Pending Admin Approval')
-        PAYMENT_APPROVED_PROCESSING = 'payment_approved_processing', _('Payment Approved Processing')
+        PAYMENT_PENDING = 'payment_pending', _('Payment Pending')
+        PAYMENT_COMPLETED = 'payment_completed', _('Payment Completed')
+        PAYMENT_FAILED = 'payment_failed', _('Payment Failed')
 
     title = models.CharField(max_length=255)
     author = models.ForeignKey(User, on_delete=models.CASCADE, related_name='articles')
@@ -142,10 +148,11 @@ class Article(models.Model):
     title_en = models.CharField(max_length=255, blank=True, null=True)
     abstract_en = models.TextField(blank=True, null=True)
     keywords_en = models.CharField(max_length=500, blank=True, null=True)
-    assignedEditor = models.ForeignKey(User, on_delete=models.SET_NULL, blank=True, null=True, related_name='assigned_articles')
+    assignedEditor = models.ForeignKey(User, on_delete=models.SET_NULL, blank=True, null=True,
+                                       related_name='assigned_articles')
     issue = models.ForeignKey(Issue, on_delete=models.SET_NULL, blank=True, null=True, related_name='articles')
-    submissionPaymentStatus = models.CharField(max_length=50, choices=PaymentStatus.choices, default=PaymentStatus.PAYMENT_PENDING_ADMIN_APPROVAL)
-    submissionReceiptFile = models.FileField(upload_to='receipts/submission/', blank=True, null=True)
+    submissionPaymentStatus = models.CharField(max_length=50, choices=PaymentStatus.choices,
+                                               default=PaymentStatus.PAYMENT_PENDING)
     managerNotes = models.TextField(blank=True, null=True)
     finalVersionFile = models.FileField(upload_to='article_final_versions/', blank=True, null=True)
     submission_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
@@ -226,3 +233,61 @@ class IntegrationSetting(models.Model):
 
     def __str__(self):
         return self.get_serviceName_display()
+
+
+class ClickTransaction(models.Model):
+    class Status(models.TextChoices):
+        WAITING = 'waiting', _('Waiting')
+        PREPARED = 'prepared', _('Prepared')
+        COMPLETED = 'completed', _('Completed')
+        ERROR = 'error', _('Error')
+        CANCELLED = 'cancelled', _('Cancelled')
+
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    click_trans_id = models.CharField(max_length=255, unique=True, null=True, blank=True, verbose_name="CLICK Trans ID")
+    merchant_trans_id = models.CharField(max_length=255, unique=True, verbose_name="Transaction ID")
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.WAITING)
+
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
+    object_id = models.PositiveIntegerField()
+    content_object = GenericForeignKey('content_type', 'object_id')
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    extra_data = models.JSONField(default=dict, blank=True)
+
+    def __str__(self):
+        return f"Transaction {self.merchant_trans_id} for {self.amount}"
+
+
+class Service(models.Model):
+    name = models.CharField(max_length=255)
+    slug = models.SlugField(max_length=255, unique=True,
+                            help_text="A unique identifier for the service URL (e.g., 'translation-service')")
+    description = models.TextField(blank=True)
+    price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    is_active = models.BooleanField(default=True)
+
+    def __str__(self):
+        return self.name
+
+
+class ServiceOrder(models.Model):
+    class Status(models.TextChoices):
+        PENDING_PAYMENT = 'pending_payment', _('Pending Payment')
+        IN_PROGRESS = 'in_progress', _('In Progress')
+        COMPLETED = 'completed', _('Completed')
+        CANCELLED = 'cancelled', _('Cancelled')
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='service_orders')
+    service = models.ForeignKey(Service, on_delete=models.PROTECT, related_name='orders')
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING_PAYMENT)
+    form_data = models.JSONField(default=dict)
+    attached_file = models.FileField(upload_to='service_orders/', blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Order for {self.service.name} by {self.user.phone}"

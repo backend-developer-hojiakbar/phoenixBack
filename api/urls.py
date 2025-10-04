@@ -3,9 +3,10 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     RegisterView, LoginView, UserViewSet, JournalViewSet, ArticleViewSet,
     JournalCategoryViewSet, JournalTypeViewSet, EditorialBoardApplicationViewSet,
-    FinancialReportAPIView, ApprovePaymentAPIView, ProfileView, SystemSettingsView,
-    IssueViewSet, AuditLogViewSet, DashboardSummaryView
+    FinancialReportAPIView, ProfileView, SystemSettingsView,
+    IssueViewSet, AuditLogViewSet, DashboardSummaryView, ServiceViewSet, ServiceOrderViewSet
 )
+from .click_views import ClickPrepareView, ClickCompleteView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 router = DefaultRouter()
@@ -17,6 +18,9 @@ router.register(r'articles', ArticleViewSet, basename='article')
 router.register(r'applications', EditorialBoardApplicationViewSet, basename='application')
 router.register(r'issues', IssueViewSet, basename='issue')
 router.register(r'audit-logs', AuditLogViewSet, basename='auditlog')
+router.register(r'services', ServiceViewSet, basename='service')
+router.register(r'service-orders', ServiceOrderViewSet, basename='service-order')
+
 
 urlpatterns = [
     path('', include(router.urls)),
@@ -26,7 +30,8 @@ urlpatterns = [
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('profile/', ProfileView.as_view(), name='profile'),
     path('financial-report/', FinancialReportAPIView.as_view(), name='financial-report'),
-    path('approve-payment/<int:article_id>/', ApprovePaymentAPIView.as_view(), name='approve-payment'),
     path('system-settings/', SystemSettingsView.as_view(), name='system-settings'),
     path('dashboard-summary/', DashboardSummaryView.as_view(), name='dashboard-summary'),
+    path('click/prepare/', ClickPrepareView.as_view(), name='click-prepare'),
+    path('click/complete/', ClickCompleteView.as_view(), name='click-complete'),
 ]

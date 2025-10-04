@@ -1,0 +1,74 @@
+
+            <html>
+                <head>
+                    <title>Tender Tahlili Hisoboti - Lot 5827516</title>
+                    <style>
+                        body { font-family: sans-serif; margin: 20px; color: #333; }
+                        h1, h2 { color: #0052cc; border-bottom: 2px solid #0052cc; padding-bottom: 5px; }
+                        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+                        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+                        th { background-color: #f4f5f7; }
+                        .summary-table td:first-child { font-weight: bold; width: 60%; }
+                        .total { font-weight: bold; font-size: 1.1em; background-color: #e6f7ff; }
+                    </style>
+                </head>
+                <body>
+                    <h1>Tender Tahlili Hisoboti</h1>
+                    <p><strong>Lot Raqami:</strong> 5827516</p>
+                    <p><strong>Tender Nomi:</strong> Printer (MFU) xaridi</p>
+                    
+                    <h2>Mahsulotlar</h2>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Nomi</th>
+                                <th>Miqdori</th>
+                                <th>Bozor Narxi (1 dona)</th>
+                                <th>Yakuniy Taklif Narxi (1 dona)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            
+                                <tr>
+                                    <td>Ko'p funksiyali printer (MFU)</td>
+                                    <td>1 dona</td>
+                                    <td>UZS 4,500,000</td>
+                                    <td>UZS 5,654,000</td>
+                                </tr>
+                        </tbody>
+                    </table>
+
+                    <h2>Qo'shimcha Xarajatlar</h2>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Nomi</th>
+                                <th>Miqdori</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            
+                                <tr>
+                                    <td>Dastavka</td>
+                                    <td>UZS 100,000</td>
+                                </tr>
+                                <tr>
+                                    <td>Bank</td>
+                                    <td>12%</td>
+                                </tr>
+                        </tbody>
+                    </table>
+
+                    <h2>Hisob-kitob Natijasi</h2>
+                    <table class="summary-table">
+                        <tbody>
+                            <tr><td>Mahsulotlarning umumiy narxi:</td><td>UZS 4,500,000</td></tr>
+                            <tr><td>Jami xarajatlar:</td><td>UZS 640,000</td></tr>
+                            <tr><td>Umumiy tannarx:</td><td>UZS 5,140,000</td></tr>
+                            <tr><td>Foyda (10%):</td><td>UZS 514,000</td></tr>
+                            <tr class="total"><td>YAKUNIY TAKLIF:</td><td>UZS 5,654,000</td></tr>
+                        </tbody>
+                    </table>
+                </body>
+            </html>
+        

@@ -1,7 +1,8 @@
 from django.contrib import admin
 from .models import (
     User, Journal, Article, Issue, ArticleVersion, ArticleTag, AuditLog,
-    IntegrationSetting, JournalCategory, JournalType, EditorialBoardApplication
+    IntegrationSetting, JournalCategory, JournalType, EditorialBoardApplication,
+    ClickTransaction, Service, ServiceOrder
 )
 
 class UserAdmin(admin.ModelAdmin):
@@ -25,6 +26,21 @@ class EditorialBoardApplicationAdmin(admin.ModelAdmin):
     list_filter = ('status',)
     search_fields = ('user__name', 'user__surname')
 
+class ClickTransactionAdmin(admin.ModelAdmin):
+    list_display = ('merchant_trans_id', 'user', 'amount', 'status', 'created_at')
+    list_filter = ('status',)
+    search_fields = ('merchant_trans_id', 'user__phone')
+
+class ServiceAdmin(admin.ModelAdmin):
+    list_display = ('name', 'slug', 'price', 'is_active')
+    prepopulated_fields = {'slug': ('name',)}
+
+class ServiceOrderAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'service', 'status', 'created_at')
+    list_filter = ('status', 'service')
+    search_fields = ('user__phone', 'service__name')
+
+
 admin.site.register(User, UserAdmin)
 admin.site.register(Journal, JournalAdmin)
 admin.site.register(JournalType)
@@ -36,3 +52,6 @@ admin.site.register(ArticleTag)
 admin.site.register(AuditLog)
 admin.site.register(IntegrationSetting)
 admin.site.register(EditorialBoardApplication, EditorialBoardApplicationAdmin)
+admin.site.register(ClickTransaction, ClickTransactionAdmin)
+admin.site.register(Service, ServiceAdmin)
+admin.site.register(ServiceOrder, ServiceOrderAdmin)

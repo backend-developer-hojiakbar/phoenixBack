@@ -1,4 +1,4 @@
-from rest_framework import viewsets, permissions, status, generics, mixins
+from rest_framework import viewsets, permissions, status, generics, mixins, serializers
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.decorators import action
@@ -15,6 +15,10 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
 import random
 import io
+import time
+from django.conf import settings
+from django.contrib.contenttypes.models import ContentType
+from .models import ClickTransaction, Service, ServiceOrder
 
 from .models import (
     User, Journal, Article, Issue, AuditLog, IntegrationSetting, JournalCategory,
@@ -23,9 +27,11 @@ from .models import (
 from .serializers import (
     UserSerializer, JournalSerializer, ArticleSerializer, IssueSerializer, AuditLogSerializer,
     IntegrationSettingSerializer, JournalCategorySerializer, JournalTypeSerializer,
-    EditorialBoardApplicationSerializer
+    EditorialBoardApplicationSerializer, ServiceSerializer, ServiceOrderSerializer
 )
-from .permissions import IsAdminUser, IsJournalManager, IsClientUser, IsOwnerOrAdmin, IsAssignedEditorOrAdmin, IsAccountantUser
+from .permissions import IsAdminUser, IsJournalManager, IsClientUser, IsOwnerOrAdmin, IsAssignedEditorOrAdmin, \
+    IsAccountantUser
+
 
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
@@ -110,26 +116,63 @@ class ArticleViewSet(viewsets.ModelViewSet):
         user = self.request.user
         base_queryset = Article.objects.select_related('author', 'journal', 'assignedEditor').prefetch_related(
             'versions')
+
         if user.role == User.Role.CLIENT:
             return base_queryset.filter(author=user).order_by('-submittedDate')
-        elif user.role == User.Role.JOURNAL_MANAGER:
-            return base_queryset.filter(journal__manager=user,
-                                        submissionPaymentStatus=Article.PaymentStatus.PAYMENT_APPROVED_PROCESSING).order_by(
-                '-submittedDate')
-        elif user.role in [User.Role.ADMIN, User.Role.ACCOUNTANT]:
+
+        if user.role == User.Role.JOURNAL_MANAGER:
+            return base_queryset.filter(
+                journal__manager=user,
+                submissionPaymentStatus=Article.PaymentStatus.PAYMENT_COMPLETED
+            ).order_by('-submittedDate')
+
+        if user.role in [User.Role.ADMIN, User.Role.ACCOUNTANT]:
             return base_queryset.all().order_by('-submittedDate')
+
         return Article.objects.none()
 
-    def perform_create(self, serializer):
-        plagiarism_percentage = random.uniform(5.0, 25.0)
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
         journal = serializer.validated_data.get('journal')
+        if not journal:
+            raise serializers.ValidationError({"detail": "Journal is required."})
+
         assigned_editor = journal.manager if journal else None
-        serializer.save(
+
+        article = serializer.save(
             author=self.request.user,
             assignedEditor=assigned_editor,
-            plagiarism_percentage=plagiarism_percentage,
-            submissionPaymentStatus=Article.PaymentStatus.PAYMENT_PENDING_ADMIN_APPROVAL
+            status=Article.ArticleStatus.PENDING,
+            submissionPaymentStatus=Article.PaymentStatus.PAYMENT_PENDING
         )
+
+        is_partner = 'hamkor' in self.request.user.get_full_name().lower()
+        amount = journal.partner_price if is_partner else journal.regular_price
+
+        transaction = ClickTransaction.objects.create(
+            user=self.request.user,
+            amount=amount,
+            merchant_trans_id=f"article_{article.id}_{int(time.time())}",
+            content_object=article,
+        )
+
+        payment_url = (
+            f"https://my.click.uz/services/pay"
+            f"?service_id={settings.CLICK_SERVICE_ID}"
+            f"&merchant_id={settings.CLICK_MERCHANT_USER_ID}"
+            f"&amount={float(amount)}"
+            f"&transaction_param={transaction.merchant_trans_id}"
+            f"&return_url=http://localhost:5173/#/payment-status"
+        )
+
+        response_serializer = self.get_serializer(article)
+        response_data = response_serializer.data
+        response_data['payment_url'] = payment_url
+
+        headers = self.get_success_headers(response_data)
+        return Response(response_data, status=status.HTTP_201_CREATED, headers=headers)
 
     @action(detail=True, methods=['post'], url_path='request_revision')
     def request_revision(self, request, pk=None):
@@ -159,8 +202,6 @@ class ArticleViewSet(viewsets.ModelViewSet):
             article.finalVersionFile = final_file
 
         if article.finalVersionFile:
-            # Bu yerda sertifikat generatsiya qilish logikasi bo'lishi kerak.
-            # Hozircha test uchun yakuniy faylni sertifikat sifatida ishlatamiz.
             article.certificate_file = article.finalVersionFile
 
         article.save()
@@ -216,7 +257,7 @@ class EditorialBoardApplicationViewSet(
         detail=True,
         methods=['patch'],
         url_path='update-status',
-        parser_classes=[JSONParser]  # To'g'ri joydan import qilingan
+        parser_classes=[JSONParser]
     )
     def update_status(self, request, pk=None):
         application = self.get_object()
@@ -242,12 +283,8 @@ class FinancialReportAPIView(APIView):
     def get(self, request, *args, **kwargs):
         export_format = request.query_params.get('format')
 
-        pending_payment_articles_qs = Article.objects.filter(
-            submissionPaymentStatus=Article.PaymentStatus.PAYMENT_PENDING_ADMIN_APPROVAL
-        ).select_related('author').order_by('submittedDate')
-
         monthly_revenue_qs = Article.objects.filter(
-            submissionPaymentStatus=Article.PaymentStatus.PAYMENT_APPROVED_PROCESSING
+            submissionPaymentStatus=Article.PaymentStatus.PAYMENT_COMPLETED
         ).annotate(month=TruncMonth('submittedDate')).values('month').annotate(total=Sum('submission_fee')).order_by(
             'month')
 
@@ -264,9 +301,7 @@ class FinancialReportAPIView(APIView):
         data = {
             'monthly_revenue': list(monthly_revenue_qs),
             'approved_articles_history': ArticleSerializer(approved_articles_qs, many=True,
-                                                           context=request_context).data,
-            'pending_payments_list': ArticleSerializer(pending_payment_articles_qs, many=True,
-                                                       context=request_context).data,
+                                                           context=request_context).data
         }
         return Response(data)
 
@@ -320,31 +355,6 @@ class FinancialReportAPIView(APIView):
         p.save()
         buffer.seek(0)
         return HttpResponse(buffer, content_type='application/pdf')
-
-
-class ApprovePaymentAPIView(APIView):
-    permission_classes = [IsAdminUser | IsAccountantUser]
-
-    def post(self, request, article_id, *args, **kwargs):
-        article = get_object_or_404(Article.objects.select_related('author', 'journal'), id=article_id)
-        author = article.author
-        journal = article.journal
-
-        if not journal:
-            return Response({'error': 'Article is not associated with a journal.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Hamkorlikni tekshirish
-        is_partner = 'hamkor' in author.name.lower() or 'xamkor' in author.name.lower() or \
-                     'hamkor' in author.surname.lower() or 'xamkor' in author.surname.lower()
-
-        # Narxni avtomatik belgilash
-        submission_fee = journal.partner_price if is_partner else journal.regular_price
-
-        article.submission_fee = submission_fee
-        article.submissionPaymentStatus = Article.PaymentStatus.PAYMENT_APPROVED_PROCESSING
-        article.status = Article.ArticleStatus.REVIEWING
-        article.save()
-        return Response(ArticleSerializer(article, context={'request': request}).data)
 
 
 class ProfileView(APIView):
@@ -402,7 +412,6 @@ class DashboardSummaryView(APIView):
         data = {}
         request_context = {'request': request}
 
-        # Bu yerda UserRole o'rniga User.Role ishlatildi
         if user.role == User.Role.CLIENT:
             data = {
                 'pending': Article.objects.filter(author=user, status=Article.ArticleStatus.PENDING).count(),
@@ -411,28 +420,75 @@ class DashboardSummaryView(APIView):
             }
         elif user.role == User.Role.JOURNAL_MANAGER:
             data = {
-                'newSubmissions': Article.objects.filter(journal__manager=user,
-                                                         status=Article.ArticleStatus.REVIEWING).count(),
-                'reviewing': Article.objects.filter(journal__manager=user,
-                                                    status=Article.ArticleStatus.REVIEWING).count(),
+                'newSubmissions': Article.objects.filter(
+                    journal__manager=user,
+                    status=Article.ArticleStatus.REVIEWING,
+                    submissionPaymentStatus=Article.PaymentStatus.PAYMENT_COMPLETED
+                ).count(),
+                'reviewing': Article.objects.filter(
+                    journal__manager=user,
+                    status=Article.ArticleStatus.REVIEWING,
+                    submissionPaymentStatus=Article.PaymentStatus.PAYMENT_COMPLETED
+                ).count(),
             }
-        # Bu yerda UserRole o'rniga User.Role ishlatildi
         elif user.role in [User.Role.ACCOUNTANT, User.Role.ADMIN]:
-            pending_payment_articles = Article.objects.filter(
-                submissionPaymentStatus=Article.PaymentStatus.PAYMENT_PENDING_ADMIN_APPROVAL
-            ).select_related('author').order_by('submittedDate')
-
+            all_articles = Article.objects.all()
             data = {
                 'totalUsers': User.objects.count() if user.role == User.Role.ADMIN else None,
                 'totalJournals': Journal.objects.count() if user.role == User.Role.ADMIN else None,
-                'totalArticles': Article.objects.count(),
-                'pendingAll': Article.objects.filter(
+                'totalArticles': all_articles.count(),
+                'pendingAll': all_articles.filter(
                     status=Article.ArticleStatus.PENDING).count() if user.role == User.Role.ADMIN else None,
-                'payments_pending_approval': pending_payment_articles.count(),
-                'pending_payments_list': ArticleSerializer(pending_payment_articles, many=True,
-                                                           context=request_context).data,
-                'total_submission_fees': Article.objects.aggregate(Sum('submission_fee'))['submission_fee__sum'] or 0,
-                'total_publication_fees': Article.objects.aggregate(Sum('publication_fee'))[
-                                              'publication_fee__sum'] or 0,
+                'payments_pending_approval': 0,
+                'pending_payments_list': [],
+                'total_submission_fees': all_articles.aggregate(Sum('submission_fee'))['submission_fee__sum'] or 0,
+                'total_publication_fees': all_articles.aggregate(Sum('publication_fee'))['publication_fee__sum'] or 0,
             }
         return Response(data)
+
+
+class ServiceViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Service.objects.filter(is_active=True)
+    serializer_class = ServiceSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    lookup_field = 'slug'
+
+
+class ServiceOrderViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
+    queryset = ServiceOrder.objects.all()
+    serializer_class = ServiceOrderSerializer
+    permission_classes = [IsClientUser]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        service = serializer.validated_data['service']
+
+        service_order = serializer.save(
+            user=self.request.user,
+            status=ServiceOrder.Status.PENDING_PAYMENT
+        )
+
+        transaction = ClickTransaction.objects.create(
+            user=self.request.user,
+            amount=service.price,
+            merchant_trans_id=f"service_{service_order.id}_{int(time.time())}",
+            content_object=service_order,
+        )
+
+        payment_url = (
+            f"https://my.click.uz/services/pay"
+            f"?service_id={settings.CLICK_SERVICE_ID}"
+            f"&merchant_id={settings.CLICK_MERCHANT_USER_ID}"
+            f"&amount={float(service.price)}"
+            f"&transaction_param={transaction.merchant_trans_id}"
+            f"&return_url=http://localhost:5173/#/payment-status"
+        )
+
+        response_data = serializer.data
+        response_data['payment_url'] = payment_url
+
+        headers = self.get_success_headers(response_data)
+        return Response(response_data, status=status.HTTP_201_CREATED, headers=headers)
