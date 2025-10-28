@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from .models import (
     User, Journal, Article, Issue, ArticleVersion, AuditLog, IntegrationSetting,
-    JournalCategory, JournalType, EditorialBoardApplication, Service, ServiceOrder
+    JournalCategory, JournalType, EditorialBoardApplication, Service, ServiceOrder, Soha
 )
 import json
 
@@ -11,6 +11,10 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = ['id', 'phone', 'name', 'surname', 'role', 'language', 'orcidId', 'password']
         extra_kwargs = {'password': {'write_only': True}}
+
+    def validate_role(self, value):
+        # Allow all roles during registration
+        return value
 
     def create(self, validated_data):
         user = User.objects.create_user(**validated_data)
@@ -112,7 +116,7 @@ class ArticleSerializer(serializers.ModelSerializer):
     class Meta:
         model = Article
         fields = [
-            'id', 'title', 'author', 'category', 'journal', 'journalName', 'submittedDate', 'status',
+            'id', 'title', 'author', 'category', 'udk', 'journal', 'journalName', 'submittedDate', 'status',
             'abstract_en', 'keywords_en', 'assignedEditor', 'assignedEditorName', 'submissionPaymentStatus',
             'versions', 'managerNotes', 'finalVersionFileUrl', 'submission_fee',
             'plagiarism_percentage', 'certificate_file_url', 'external_link', 'attachment_file_url',
@@ -199,11 +203,18 @@ class ServiceOrderSerializer(serializers.ModelSerializer):
         model = ServiceOrder
         fields = [
             'id', 'user', 'service', 'status', 'form_data', 'attached_file',
-            'created_at', 'service_id', 'form_data_str'
+            'udc_code', 'assigned_writer', 'printing_status', 'tracking_number',
+            'shipped_date', 'calculated_price', 'created_at', 'updated_at',
+            'service_id', 'form_data_str'
         ]
         extra_kwargs = {
             'attached_file': {'required': False},
-            'form_data': {'read_only': True}
+            'form_data': {'read_only': True},
+            'udc_code': {'required': False},
+            'assigned_writer': {'required': False},
+            'printing_status': {'required': False},
+            'tracking_number': {'required': False},
+            'calculated_price': {'required': False}
         }
 
     def create(self, validated_data):
@@ -215,3 +226,10 @@ class ServiceOrderSerializer(serializers.ModelSerializer):
 
         validated_data['form_data'] = form_data
         return super().create(validated_data)
+
+
+class SohaSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Soha
+        fields = ['id', 'name', 'created_at', 'updated_at', 'is_active']
+        read_only_fields = ['id', 'created_at', 'updated_at']

@@ -4,7 +4,9 @@ from .views import (
     RegisterView, LoginView, UserViewSet, JournalViewSet, ArticleViewSet,
     JournalCategoryViewSet, JournalTypeViewSet, EditorialBoardApplicationViewSet,
     FinancialReportAPIView, ProfileView, SystemSettingsView,
-    IssueViewSet, AuditLogViewSet, DashboardSummaryView, ServiceViewSet, ServiceOrderViewSet
+    IssueViewSet, AuditLogViewSet, DashboardSummaryView, ServiceViewSet, ServiceOrderViewSet,
+    WriterDashboardSummaryView, WriterArticleViewSet, UDCAssignmentViewSet, WriterUDCOrdersViewSet,
+    PrintedPublicationsViewSet, SohaViewSet
 )
 from .click_views import ClickPrepareView, ClickCompleteView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -20,6 +22,11 @@ router.register(r'issues', IssueViewSet, basename='issue')
 router.register(r'audit-logs', AuditLogViewSet, basename='auditlog')
 router.register(r'services', ServiceViewSet, basename='service')
 router.register(r'service-orders', ServiceOrderViewSet, basename='service-order')
+router.register(r'writer-articles', WriterArticleViewSet, basename='writer-article')
+router.register(r'udc-assignments', UDCAssignmentViewSet, basename='udc-assignment')
+router.register(r'writer-udc-orders', WriterUDCOrdersViewSet, basename='writer-udc-order')
+router.register(r'printed-publications', PrintedPublicationsViewSet, basename='printed-publications')
+router.register(r'soha-fields', SohaViewSet, basename='soha')
 
 
 urlpatterns = [
@@ -32,6 +39,7 @@ urlpatterns = [
     path('financial-report/', FinancialReportAPIView.as_view(), name='financial-report'),
     path('system-settings/', SystemSettingsView.as_view(), name='system-settings'),
     path('dashboard-summary/', DashboardSummaryView.as_view(), name='dashboard-summary'),
+    path('writer-dashboard-summary/', WriterDashboardSummaryView.as_view(), name='writer-dashboard-summary'),
     path('click/prepare/', ClickPrepareView.as_view(), name='click-prepare'),
     path('click/complete/', ClickCompleteView.as_view(), name='click-complete'),
 ]

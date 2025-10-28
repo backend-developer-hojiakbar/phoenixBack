@@ -13,6 +13,10 @@ class IsClientUser(permissions.BasePermission):
     def has_permission(self, request, view):
         return request.user and request.user.is_authenticated and request.user.role == User.Role.CLIENT
 
+class IsWriterUser(permissions.BasePermission):
+    def has_permission(self, request, view):
+        return request.user and request.user.is_authenticated and request.user.role == User.Role.WRITER
+
 class IsAccountantUser(permissions.BasePermission):
     def has_permission(self, request, view):
         return request.user and request.user.is_authenticated and request.user.role == User.Role.ACCOUNTANT
@@ -36,3 +40,4 @@ class IsAssignedEditorOrAdmin(permissions.BasePermission):
         if request.user.role == User.Role.JOURNAL_MANAGER and isinstance(obj, Article):
             return obj.assignedEditor == request.user
         return False
+

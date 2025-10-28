@@ -35,6 +35,7 @@ class UserManager(BaseUserManager):
 class User(AbstractUser):
     class Role(models.TextChoices):
         CLIENT = 'client', _('Client')
+        WRITER = 'writer', _('Writer')
         JOURNAL_MANAGER = 'journal_manager', _('Journal Manager')
         ACCOUNTANT = 'accountant', _('Accountant')
         ADMIN = 'admin', _('Admin')
@@ -137,6 +138,7 @@ class Article(models.Model):
     title = models.CharField(max_length=255)
     author = models.ForeignKey(User, on_delete=models.CASCADE, related_name='articles')
     category = models.CharField(max_length=100, blank=True)
+    udk = models.CharField(max_length=20, blank=True, null=True, verbose_name="Universal Decimal Classification")
     journal = models.ForeignKey(Journal, on_delete=models.SET_NULL, null=True, blank=True, related_name='articles')
     submittedDate = models.DateTimeField(auto_now_add=True)
     status = models.CharField(max_length=20, choices=ArticleStatus.choices, default=ArticleStatus.PENDING)
@@ -274,18 +276,42 @@ class Service(models.Model):
         return self.name
 
 
+class Soha(models.Model):
+    name = models.CharField(max_length=255, unique=True, verbose_name="SOHA Name")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        verbose_name = "SOHA"
+        verbose_name_plural = "SOHAs"
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
 class ServiceOrder(models.Model):
     class Status(models.TextChoices):
         PENDING_PAYMENT = 'pending_payment', _('Pending Payment')
         IN_PROGRESS = 'in_progress', _('In Progress')
         COMPLETED = 'completed', _('Completed')
         CANCELLED = 'cancelled', _('Cancelled')
+        UDC_ASSIGNED = 'udc_assigned', _('UDC Assigned')
+        PRINTING = 'printing', _('Printing')
+        SHIPPED = 'shipped', _('Shipped')
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='service_orders')
     service = models.ForeignKey(Service, on_delete=models.PROTECT, related_name='orders')
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING_PAYMENT)
     form_data = models.JSONField(default=dict)
     attached_file = models.FileField(upload_to='service_orders/', blank=True, null=True)
+    udc_code = models.CharField(max_length=20, blank=True, null=True, verbose_name="UDC Code")
+    assigned_writer = models.ForeignKey(User, on_delete=models.SET_NULL, blank=True, null=True, related_name='assigned_udc_orders')
+    printing_status = models.CharField(max_length=100, blank=True, null=True, verbose_name="Printing Status")
+    tracking_number = models.CharField(max_length=100, blank=True, null=True, verbose_name="Tracking Number")
+    shipped_date = models.DateTimeField(blank=True, null=True, verbose_name="Shipped Date")
+    calculated_price = models.DecimalField(max_digits=10, decimal_places=2, default=0, verbose_name="Calculated Price")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

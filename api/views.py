@@ -16,21 +16,23 @@ from reportlab.lib.units import inch
 import random
 import io
 import time
+from django.utils import timezone
+import json
 from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
 from .models import ClickTransaction, Service, ServiceOrder
 
 from .models import (
     User, Journal, Article, Issue, AuditLog, IntegrationSetting, JournalCategory,
-    ArticleVersion, JournalType, EditorialBoardApplication
+    ArticleVersion, JournalType, EditorialBoardApplication, Soha
 )
 from .serializers import (
     UserSerializer, JournalSerializer, ArticleSerializer, IssueSerializer, AuditLogSerializer,
     IntegrationSettingSerializer, JournalCategorySerializer, JournalTypeSerializer,
-    EditorialBoardApplicationSerializer, ServiceSerializer, ServiceOrderSerializer
+    EditorialBoardApplicationSerializer, ServiceSerializer, ServiceOrderSerializer, SohaSerializer
 )
 from .permissions import IsAdminUser, IsJournalManager, IsClientUser, IsOwnerOrAdmin, IsAssignedEditorOrAdmin, \
-    IsAccountantUser
+    IsAccountantUser, IsWriterUser
 
 
 class RegisterView(generics.CreateAPIView):
@@ -447,11 +449,20 @@ class DashboardSummaryView(APIView):
         return Response(data)
 
 
-class ServiceViewSet(viewsets.ReadOnlyModelViewSet):
+class ServiceViewSet(viewsets.ModelViewSet):
     queryset = Service.objects.filter(is_active=True)
     serializer_class = ServiceSerializer
     permission_classes = [permissions.IsAuthenticated]
     lookup_field = 'slug'
+
+    def get_permissions(self):
+        # Allow read-only access for authenticated users
+        if self.action in ['list', 'retrieve']:
+            permission_classes = [permissions.IsAuthenticated]
+        else:
+            # Require admin privileges for create, update, delete operations
+            permission_classes = [IsAdminUser]
+        return [permission() for permission in permission_classes]
 
 
 class ServiceOrderViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
@@ -466,14 +477,59 @@ class ServiceOrderViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
 
         service = serializer.validated_data['service']
 
+        # Calculate dynamic price for printed publications based on page count
+        form_data_str = request.data.get('form_data_str', '{}')
+        try:
+            form_data = json.loads(form_data_str)
+        except json.JSONDecodeError:
+            form_data = {}
+
+        if service.slug == 'printed-publications':
+            # Calculate price based on pages
+            book_pages = form_data.get('bookPages', 0)
+            quantity = form_data.get('quantity', 1)
+            try:
+                book_pages = int(book_pages)
+                quantity = int(quantity)
+            except (ValueError, TypeError):
+                book_pages = 0
+                quantity = 1
+
+            # Base price calculation: 400 UZS per page
+            base_price = book_pages * 400
+
+            # Add cover type premium
+            cover_type = form_data.get('coverType', 'soft')
+            if cover_type == 'hard':
+                base_price += 25000  # Additional 25,000 UZS for hard cover
+            elif cover_type == 'soft':
+                base_price += 10000  # Additional 10,000 UZS for soft cover
+
+            # Add ISBN price if requested
+            include_isbn = form_data.get('includeISBN', False)
+            if include_isbn:
+                base_price += 600000  # Additional 600,000 UZS for ISBN
+
+            # Multiply by quantity
+            total_price = base_price * quantity
+
+            # Minimum price of 4000 UZS
+            if total_price < 4000:
+                total_price = 4000
+
+            service_price = total_price
+        else:
+            service_price = float(service.price)
+
         service_order = serializer.save(
             user=self.request.user,
-            status=ServiceOrder.Status.PENDING_PAYMENT
+            status=ServiceOrder.Status.PENDING_PAYMENT,
+            calculated_price=service_price
         )
 
         transaction = ClickTransaction.objects.create(
             user=self.request.user,
-            amount=service.price,
+            amount=service_price,
             merchant_trans_id=f"service_{service_order.id}_{int(time.time())}",
             content_object=service_order,
         )
@@ -482,7 +538,7 @@ class ServiceOrderViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
             f"https://my.click.uz/services/pay"
             f"?service_id={settings.CLICK_SERVICE_ID}"
             f"&merchant_id={settings.CLICK_MERCHANT_USER_ID}"
-            f"&amount={float(service.price)}"
+            f"&amount={service_price}"
             f"&transaction_param={transaction.merchant_trans_id}"
             f"&return_url=http://localhost:5173/#/payment-status"
         )
@@ -492,3 +548,214 @@ class ServiceOrderViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
 
         headers = self.get_success_headers(response_data)
         return Response(response_data, status=status.HTTP_201_CREATED, headers=headers)
+
+
+class WriterDashboardSummaryView(APIView):
+    permission_classes = [IsWriterUser]
+
+    def get(self, request, *args, **kwargs):
+        user = self.request.user
+        data = {}
+        request_context = {'request': request}
+
+        if user.role == User.Role.WRITER:
+            data = {
+                'pending': Article.objects.filter(author=user, status=Article.ArticleStatus.PENDING).count(),
+                'revision': Article.objects.filter(author=user, status=Article.ArticleStatus.NEEDS_REVISION).count(),
+                'accepted': Article.objects.filter(author=user, status=Article.ArticleStatus.ACCEPTED).count(),
+                'totalArticles': Article.objects.filter(author=user).count(),
+            }
+        return Response(data)
+
+
+class WriterArticleViewSet(viewsets.ModelViewSet):
+    serializer_class = ArticleSerializer
+    parser_classes = [MultiPartParser, FormParser]
+    permission_classes = [IsWriterUser]
+
+    def get_serializer_context(self):
+        return {'request': self.request}
+
+    def get_queryset(self):
+        user = self.request.user
+        return Article.objects.select_related('author', 'journal', 'assignedEditor').prefetch_related(
+            'versions').filter(author=user).order_by('-submittedDate')
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        journal = serializer.validated_data.get('journal')
+        if not journal:
+            raise serializers.ValidationError({"detail": "Journal is required."})
+
+        assigned_editor = journal.manager if journal else None
+
+        article = serializer.save(
+            author=self.request.user,
+            assignedEditor=assigned_editor,
+            status=Article.ArticleStatus.PENDING,
+            submissionPaymentStatus=Article.PaymentStatus.PAYMENT_PENDING
+        )
+
+        is_partner = 'hamkor' in self.request.user.get_full_name().lower()
+        amount = journal.partner_price if is_partner else journal.regular_price
+
+        transaction = ClickTransaction.objects.create(
+            user=self.request.user,
+            amount=amount,
+            merchant_trans_id=f"article_{article.id}_{int(time.time())}",
+            content_object=article,
+        )
+
+        payment_url = (
+            f"https://my.click.uz/services/pay"
+            f"?service_id={settings.CLICK_SERVICE_ID}"
+            f"&merchant_id={settings.CLICK_MERCHANT_USER_ID}"
+            f"&amount={float(amount)}"
+            f"&transaction_param={transaction.merchant_trans_id}"
+            f"&return_url=http://localhost:5173/#/payment-status"
+        )
+
+        response_serializer = self.get_serializer(article)
+        response_data = response_serializer.data
+        response_data['payment_url'] = payment_url
+
+        headers = self.get_success_headers(response_data)
+        return Response(response_data, status=status.HTTP_201_CREATED, headers=headers)
+
+    @action(detail=True, methods=['post'], url_path='submit-revision', parser_classes=[MultiPartParser, FormParser])
+    def submit_revision(self, request, pk=None):
+        article = self.get_object()
+        if article.author != request.user:
+            return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+        new_file = request.data.get('file')
+        if not new_file:
+            return Response({'error': 'A new file is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        ArticleVersion.objects.create(article=article, versionNumber=article.versions.count() + 1, file=new_file,
+                                      submitter=request.user)
+        article.status = Article.ArticleStatus.REVIEWING
+        article.plagiarism_percentage = random.uniform(2.0, 15.0)
+        article.save()
+        return Response(self.get_serializer(article).data)
+
+
+class UDCAssignmentViewSet(viewsets.ModelViewSet):
+    serializer_class = ServiceOrderSerializer
+    permission_classes = [IsWriterUser]
+
+    def get_queryset(self):
+        # Writers can only see UDC classification orders that are pending assignment (IN_PROGRESS)
+        return ServiceOrder.objects.filter(
+            service__slug='udc-classification',
+            status=ServiceOrder.Status.IN_PROGRESS
+        ).select_related('user', 'service').order_by('-created_at')
+
+    def get_permissions(self):
+        if self.action == 'assign_udc':
+            # Only writers can assign UDC codes
+            permission_classes = [IsWriterUser]
+        else:
+            # For listing, only writers can view
+            permission_classes = [IsWriterUser]
+        return [permission() for permission in permission_classes]
+
+    @action(detail=True, methods=['post'], url_path='assign-udc')
+    def assign_udc(self, request, pk=None):
+        order = self.get_object()
+        udc_code = request.data.get('udc_code')
+
+        if not udc_code:
+            return Response({'error': 'UDC code is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Update the order with UDC code and change status
+        order.udc_code = udc_code
+        order.status = ServiceOrder.Status.UDC_ASSIGNED
+        order.assigned_writer = request.user
+        order.save()
+
+        # Create notification or log entry if needed
+        # This could be extended to send notifications to the author
+
+        return Response(self.get_serializer(order).data)
+
+
+class WriterUDCOrdersViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = ServiceOrderSerializer
+    permission_classes = [IsWriterUser]
+
+    def get_queryset(self):
+        # Writers can see all their assigned UDC orders
+        return ServiceOrder.objects.filter(
+            assigned_writer=self.request.user,
+            service__slug='udc-classification'
+        ).select_related('user', 'service').order_by('-created_at')
+
+
+class SohaViewSet(viewsets.ModelViewSet):
+    queryset = Soha.objects.all().order_by('name')
+    serializer_class = SohaSerializer
+    permission_classes = [IsAdminUser]
+
+    def get_permissions(self):
+        # Allow read-only access for non-admin users (for dropdowns, etc.)
+        if self.action == 'list' or self.action == 'retrieve':
+            permission_classes = [permissions.IsAuthenticated]
+        else:
+            permission_classes = [IsAdminUser]
+        return [permission() for permission in permission_classes]
+
+
+class PrintedPublicationsViewSet(viewsets.ModelViewSet):
+    serializer_class = ServiceOrderSerializer
+    permission_classes = [IsWriterUser | IsAdminUser]
+
+    def get_queryset(self):
+        # Both writers and admins can see printed publications orders
+        return ServiceOrder.objects.filter(
+            service__slug='printed-publications'
+        ).select_related('user', 'service', 'assigned_writer').order_by('-created_at')
+
+    def get_permissions(self):
+        if self.action in ['update_status', 'assign_writer']:
+            # Only writers and admins can update status
+            permission_classes = [IsWriterUser | IsAdminUser]
+        else:
+            # For listing, only writers and admins can view
+            permission_classes = [IsWriterUser | IsAdminUser]
+        return [permission() for permission in permission_classes]
+
+    @action(detail=True, methods=['post'], url_path='update-status')
+    def update_status(self, request, pk=None):
+        order = self.get_object()
+        status = request.data.get('status')
+        printing_status = request.data.get('printing_status')
+        tracking_number = request.data.get('tracking_number')
+
+        if status:
+            order.status = status
+        if printing_status:
+            order.printing_status = printing_status
+        if tracking_number:
+            order.tracking_number = tracking_number
+            if status == ServiceOrder.Status.SHIPPED:
+                order.shipped_date = timezone.now()
+
+        order.save()
+        return Response(self.get_serializer(order).data)
+
+    @action(detail=True, methods=['post'], url_path='assign-writer')
+    def assign_writer(self, request, pk=None):
+        order = self.get_object()
+        writer_id = request.data.get('writer_id')
+
+        if not writer_id:
+            return Response({'error': 'Writer ID is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            writer = User.objects.get(id=writer_id, role=User.Role.WRITER)
+            order.assigned_writer = writer
+            order.save()
+            return Response(self.get_serializer(order).data)
+        except User.DoesNotExist:
+            return Response({'error': 'Writer not found.'}, status=status.HTTP_404_NOT_FOUND)
