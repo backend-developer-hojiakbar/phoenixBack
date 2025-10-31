@@ -13,9 +13,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = 'django-insecure-3tpmjqp_gx9tq@h=c)b9wyzae@uivl06##h+&(iyrrnrron39h'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = False
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['api.ilmiyfaoliyat.uz', 'ilmiyfaoliyat.uz', 'localhost', '127.0.0.1']
 
 
 # Application definition
@@ -132,9 +132,10 @@ REST_FRAMEWORK = {
 }
 
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173", # React development server
-    "http://127.0.0.1:5173",
+    "https://ilmiyfaoliyat.uz",
+    "http://ilmiyfaoliyat.uz",
 ]
+CORS_ALLOW_CREDENTIALS = True
 # CLICK Integration Settings
 # CLICK_SERVICE_ID = config('CLICK_SERVICE_ID', cast=int)
 # CLICK_MERCHANT_USER_ID = config('CLICK_MERCHANT_USER_ID', cast=int)
